@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Mountain Climbers Coach</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: sans-serif;
+      background-color: #000;
+      overflow: hidden;
+    }
+    #container {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      text-align: center;
+      overflow: hidden;
+    }
+    #webcam, #output {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #counter {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 3em;
+      font-weight: bold;
+      color: #fff;
+      text-shadow: 2px 2px 6px rgba(0,0,0,0.7);
+      z-index: 30;
+    }
+    #startButton {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 24px;
+      font-size: 1.1em;
+      font-weight: bold;
+      cursor: pointer;
+      z-index: 40;
+    }
+    .feedback-line {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 1.4em;
+      font-weight: bold;
+      z-index: 35;
+      max-width: 90%;
+      white-space: nowrap;
+      text-shadow: 1px 1px 4px rgba(0,0,0,0.7);
+    }
+    #feedback-action {
+      bottom: 140px;
+      background-color: rgba(0, 102, 204, 0.85); /* Μπλε */
+    }
+    #feedback-technique {
+      bottom: 90px;
+    }
+  </style>
+  <!-- TensorFlow + MoveNet -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+</head>
+<body>
+
+<div id="container">
+  <video id="webcam" playsinline muted></video>
+  <canvas id="output"></canvas>
+  <div id="counter">0</div>
+  <div id="feedback-action" class="feedback-line"></div>
+  <div id="feedback-technique" class="feedback-line"></div>
+  <button id="startButton">Είμαι έτοιμος!</button>
+</div>
+
+<script>
+const video = document.getElementById('webcam');
+const canvas = document.getElementById('output');
+const ctx = canvas.getContext('2d');
+const startButton = document.getElementById('startButton');
+const feedbackAction = document.getElementById('feedback-action');
+const feedbackTechnique = document.getElementById('feedback-technique');
+const counterDiv = document.getElementById('counter');
+
+let detector;
+let videoReady = false;
+let climbCount = 0;
+let leftActive = false;
+let rightActive = false;
+
+// ---------- Setup ----------
+async function setupWebcam() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    return new Promise((resolve) => {
+      video.onloadedmetadata = () => {
+        video.play();
+        videoReady = true;
+        resolve(video);
+      };
+    });
+  } catch (error) {
+    feedbackAction.textContent = 'Δεν είναι δυνατή η πρόσβαση στην κάμερα.';
+    console.error('Webcam error:', error);
+  }
+}
+
+async function loadModel() {
+  feedbackAction.textContent = 'Φόρτωση AI...';
+  detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+    modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+  });
+  feedbackAction.textContent = 'Έτοιμο! Πάτησε "Είμαι έτοιμος!"';
+}
+
+// ---------- Helper ----------
+function distance(a, b) {
+  return Math.sqrt(Math.pow(a.x - b.x,2) + Math.pow(a.y - b.y,2));
+}
+function getAngle(a, b, c) {
+  const ab = {x: a.x - b.x, y: a.y - b.y};
+  const cb = {x: c.x - b.x, y: c.y - b.y};
+  const dot = ab.x * cb.x + ab.y * cb.y;
+  const magAB = Math.sqrt(ab.x*ab.x + ab.y*ab.y);
+  const magCB = Math.sqrt(cb.x*cb.x + cb.y*cb.y);
+  const angle = Math.acos(dot / (magAB * magCB));
+  return angle * (180 / Math.PI);
+}
+
+// ---------- Form Check ----------
+function checkForm(keypoints) {
+  const leftShoulder = keypoints[5];
+  const rightShoulder = keypoints[6];
+  const leftHip = keypoints[11];
+  const rightHip = keypoints[12];
+  const leftWrist = keypoints[9];
+  const rightWrist = keypoints[10];
+  const leftAnkle = keypoints[15];
+  const rightAnkle = keypoints[16];
+
+  let feedback = [];
+
+  if (leftShoulder && rightShoulder && leftWrist && rightWrist) {
+    const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+    const avgWristY = (leftWrist.y + rightWrist.y) / 2;
+    if (avgShoulderY > avgWristY + 50) {
+      feedback.push("Κράτα τους ώμους πάνω από τους καρπούς");
+    }
+  }
+
+  if (leftShoulder && leftHip && leftAnkle) {
+    const backAngle = getAngle(leftShoulder, leftHip, leftAnkle);
+    if (backAngle < 150) {
+      feedback.push("Μην καμπουριάζεις, ίσιωσε την πλάτη");
+    }
+  }
+
+  if (feedback.length === 0) {
+    return "Τέλεια τεχνική!";
+  }
+  return feedback[0];
+}
+
+// ---------- Main Loop ----------
+async function detectPoseInRealTime() {
+  if (!videoReady || !detector) {
+    requestAnimationFrame(detectPoseInRealTime);
+    return;
+  }
+
+  const poses = await detector.estimatePoses(video);
+  if (poses.length > 0) {
+    const keypoints = poses[0].keypoints;
+    const leftKnee = keypoints[13];
+    const rightKnee = keypoints[14];
+    const leftShoulder = keypoints[5];
+    const rightShoulder = keypoints[6];
+
+    if (leftKnee && rightKnee && leftShoulder && rightShoulder) {
+      const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+
+      // Left knee movement
+      if (leftKnee.y < avgShoulderY + 100 && !leftActive) {
+        climbCount++;
+        leftActive = true;
+        rightActive = false;
+        feedbackAction.textContent = "Γόνατο μπροστά!";
+      } else if (leftKnee.y > avgShoulderY + 150) {
+        leftActive = false;
+      }
+
+      // Right knee movement
+      if (rightKnee.y < avgShoulderY + 100 && !rightActive) {
+        climbCount++;
+        rightActive = true;
+        leftActive = false;
+        feedbackAction.textContent = "Γόνατο μπροστά!";
+      } else if (rightKnee.y > avgShoulderY + 150) {
+        rightActive = false;
+      }
+
+      counterDiv.textContent = climbCount;
+    }
+
+    // Τεχνική
+    const techniqueMsg = checkForm(keypoints);
+    feedbackTechnique.textContent = techniqueMsg;
+    if (techniqueMsg === "Τέλεια τεχνική!") {
+      feedbackTechnique.style.backgroundColor = "rgba(0, 153, 51, 0.85)";
+    } else {
+      feedbackTechnique.style.backgroundColor = "rgba(204, 0, 0, 0.85)";
+    }
+
+    drawPose(poses[0]);
+  }
+
+  requestAnimationFrame(detectPoseInRealTime);
+}
+
+// ---------- Draw Pose ----------
+function drawPose(pose) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  if (pose && pose.keypoints) {
+    ctx.fillStyle = "yellow";
+    for (let kp of pose.keypoints) {
+      if (kp.score > 0.4) {
+        ctx.beginPath();
+        ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+// ---------- Events ----------
+startButton.addEventListener('click', () => {
+  startButton.style.display = "none";
+  detectPoseInRealTime();
+});
+
+setupWebcam();
+loadModel();
+</script>
+
+</body>
+</html>
