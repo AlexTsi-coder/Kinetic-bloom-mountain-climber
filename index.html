@@ -6,22 +6,17 @@
   <style>
     body {
       margin: 0;
-      padding: 0;
-      font-family: sans-serif;
-      background-color: #000;
+      background: #000;
       overflow: hidden;
+      font-family: sans-serif;
     }
     #container {
       position: relative;
       width: 100%;
       height: 100vh;
-      text-align: center;
-      overflow: hidden;
     }
     #webcam, #output {
       position: absolute;
-      top: 0;
-      left: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
@@ -32,233 +27,118 @@
       left: 50%;
       transform: translateX(-50%);
       font-size: 3em;
-      font-weight: bold;
       color: #fff;
-      text-shadow: 2px 2px 6px rgba(0,0,0,0.7);
+      text-shadow: 2px 2px 6px #000;
       z-index: 30;
     }
-    #startButton {
-      position: absolute;
-      bottom: 30px;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 12px 24px;
-      font-size: 1.1em;
-      font-weight: bold;
-      cursor: pointer;
-      z-index: 40;
-    }
-    .feedback-line {
+    .feedback {
       position: absolute;
       left: 50%;
       transform: translateX(-50%);
       color: #fff;
-      padding: 10px 16px;
-      border-radius: 8px;
       font-size: 1.4em;
       font-weight: bold;
-      z-index: 35;
+      padding: 10px 18px;
+      border-radius: 6px;
+      text-shadow: 1px 1px 3px #000;
       max-width: 90%;
       white-space: nowrap;
-      text-shadow: 1px 1px 4px rgba(0,0,0,0.7);
+      z-index: 35;
     }
-    #feedback-action {
-      bottom: 140px;
-      background-color: rgba(0, 102, 204, 0.85); /* Μπλε */
+    #action {
+      bottom: 120px;
+      background: rgba(0, 102, 204, 0.85);
     }
-    #feedback-technique {
-      bottom: 90px;
+    #technique {
+      bottom: 70px;
+      background: rgba(0, 0, 0, 0.65);
     }
   </style>
-  <!-- TensorFlow + MoveNet -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
 </head>
 <body>
-
 <div id="container">
   <video id="webcam" playsinline muted></video>
   <canvas id="output"></canvas>
   <div id="counter">0</div>
-  <div id="feedback-action" class="feedback-line"></div>
-  <div id="feedback-technique" class="feedback-line"></div>
-  <button id="startButton">Είμαι έτοιμος!</button>
+  <div id="action" class="feedback"></div>
+  <div id="technique" class="feedback"></div>
 </div>
-
 <script>
-const video = document.getElementById('webcam');
-const canvas = document.getElementById('output');
-const ctx = canvas.getContext('2d');
-const startButton = document.getElementById('startButton');
-const feedbackAction = document.getElementById('feedback-action');
-const feedbackTechnique = document.getElementById('feedback-technique');
-const counterDiv = document.getElementById('counter');
+const video=document.getElementById('webcam'),
+      canvas=document.getElementById('output'),
+      ctx=canvas.getContext('2d'),
+      counter=document.getElementById('counter'),
+      action=document.getElementById('action'),
+      tech=document.getElementById('technique');
 
-let detector;
-let videoReady = false;
-let climbCount = 0;
-let leftActive = false;
-let rightActive = false;
+let detector,lastLeg="none",count=0;
 
-// ---------- Setup ----------
-async function setupWebcam() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    video.srcObject = stream;
-    return new Promise((resolve) => {
-      video.onloadedmetadata = () => {
-        video.play();
-        videoReady = true;
-        resolve(video);
-      };
-    });
-  } catch (error) {
-    feedbackAction.textContent = 'Δεν είναι δυνατή η πρόσβαση στην κάμερα.';
-    console.error('Webcam error:', error);
-  }
+async function setupCam(){
+  const s=await navigator.mediaDevices.getUserMedia({video:true});
+  video.srcObject=s;
+  return new Promise(r=>{video.onloadedmetadata=()=>{video.play();r(video);};});
 }
 
-async function loadModel() {
-  feedbackAction.textContent = 'Φόρτωση AI...';
-  detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
-    modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
-  });
-  feedbackAction.textContent = 'Έτοιμο! Πάτησε "Είμαι έτοιμος!"';
+async function loadModel(){
+  detector=await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    {modelType:poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING}
+  );
+  detect();
 }
 
-// ---------- Helper ----------
-function distance(a, b) {
-  return Math.sqrt(Math.pow(a.x - b.x,2) + Math.pow(a.y - b.y,2));
-}
-function getAngle(a, b, c) {
-  const ab = {x: a.x - b.x, y: a.y - b.y};
-  const cb = {x: c.x - b.x, y: c.y - b.y};
-  const dot = ab.x * cb.x + ab.y * cb.y;
-  const magAB = Math.sqrt(ab.x*ab.x + ab.y*ab.y);
-  const magCB = Math.sqrt(cb.x*cb.x + cb.y*cb.y);
-  const angle = Math.acos(dot / (magAB * magCB));
-  return angle * (180 / Math.PI);
+function checkTechnique(kp){
+  if(kp.length<17) return "Φανερώσου ολόκληρος στο κάδρο!";
+  const lHip=kp[11],rHip=kp[12],lShoulder=kp[5],rShoulder=kp[6];
+  if([lHip,rHip,lShoulder,rShoulder].some(p=>!p||p.score<0.4))
+    return "Φανερώσου ολόκληρος στο κάδρο!";
+  // έλεγχος κορμού
+  const avgHipY=(lHip.y+rHip.y)/2, avgShoulderY=(lShoulder.y+rShoulder.y)/2;
+  if(avgHipY>avgShoulderY+120) return "Μην αφήνεις τη λεκάνη να πέφτει!";
+  return "Τέλεια τεχνική!";
 }
 
-// ---------- Form Check ----------
-function checkForm(keypoints) {
-  const leftShoulder = keypoints[5];
-  const rightShoulder = keypoints[6];
-  const leftHip = keypoints[11];
-  const rightHip = keypoints[12];
-  const leftWrist = keypoints[9];
-  const rightWrist = keypoints[10];
-  const leftAnkle = keypoints[15];
-  const rightAnkle = keypoints[16];
+async function detect(){
+  const poses=await detector.estimatePoses(video);
+  if(poses.length>0){
+    const kp=poses[0].keypoints,
+          lHip=kp[11],rHip=kp[12],
+          lKnee=kp[13],rKnee=kp[14];
+    if(lHip&&rHip&&lKnee&&rKnee &&
+       lHip.score>0.4&&rHip.score>0.4&&
+       lKnee.score>0.4&&rKnee.score>0.4){
 
-  let feedback = [];
-
-  if (leftShoulder && rightShoulder && leftWrist && rightWrist) {
-    const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
-    const avgWristY = (leftWrist.y + rightWrist.y) / 2;
-    if (avgShoulderY > avgWristY + 50) {
-      feedback.push("Κράτα τους ώμους πάνω από τους καρπούς");
-    }
-  }
-
-  if (leftShoulder && leftHip && leftAnkle) {
-    const backAngle = getAngle(leftShoulder, leftHip, leftAnkle);
-    if (backAngle < 150) {
-      feedback.push("Μην καμπουριάζεις, ίσιωσε την πλάτη");
-    }
-  }
-
-  if (feedback.length === 0) {
-    return "Τέλεια τεχνική!";
-  }
-  return feedback[0];
-}
-
-// ---------- Main Loop ----------
-async function detectPoseInRealTime() {
-  if (!videoReady || !detector) {
-    requestAnimationFrame(detectPoseInRealTime);
-    return;
-  }
-
-  const poses = await detector.estimatePoses(video);
-  if (poses.length > 0) {
-    const keypoints = poses[0].keypoints;
-    const leftKnee = keypoints[13];
-    const rightKnee = keypoints[14];
-    const leftShoulder = keypoints[5];
-    const rightShoulder = keypoints[6];
-
-    if (leftKnee && rightKnee && leftShoulder && rightShoulder) {
-      const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
-
-      // Left knee movement
-      if (leftKnee.y < avgShoulderY + 100 && !leftActive) {
-        climbCount++;
-        leftActive = true;
-        rightActive = false;
-        feedbackAction.textContent = "Γόνατο μπροστά!";
-      } else if (leftKnee.y > avgShoulderY + 150) {
-        leftActive = false;
+      // thresholds: γόνατο πάνω από το ύψος του ισχίου
+      if(lKnee.y<lHip.y && lastLeg!=="left"){
+        count++;
+        lastLeg="left";
+        action.textContent="Σήκωσε δεξί τώρα!";
+        counter.textContent=count;
       }
-
-      // Right knee movement
-      if (rightKnee.y < avgShoulderY + 100 && !rightActive) {
-        climbCount++;
-        rightActive = true;
-        leftActive = false;
-        feedbackAction.textContent = "Γόνατο μπροστά!";
-      } else if (rightKnee.y > avgShoulderY + 150) {
-        rightActive = false;
-      }
-
-      counterDiv.textContent = climbCount;
-    }
-
-    // Τεχνική
-    const techniqueMsg = checkForm(keypoints);
-    feedbackTechnique.textContent = techniqueMsg;
-    if (techniqueMsg === "Τέλεια τεχνική!") {
-      feedbackTechnique.style.backgroundColor = "rgba(0, 153, 51, 0.85)";
-    } else {
-      feedbackTechnique.style.backgroundColor = "rgba(204, 0, 0, 0.85)";
-    }
-
-    drawPose(poses[0]);
-  }
-
-  requestAnimationFrame(detectPoseInRealTime);
-}
-
-// ---------- Draw Pose ----------
-function drawPose(pose) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-  if (pose && pose.keypoints) {
-    ctx.fillStyle = "yellow";
-    for (let kp of pose.keypoints) {
-      if (kp.score > 0.4) {
-        ctx.beginPath();
-        ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-        ctx.fill();
+      else if(rKnee.y<rHip.y && lastLeg!=="right"){
+        count++;
+        lastLeg="right";
+        action.textContent="Σήκωσε αριστερό τώρα!";
+        counter.textContent=count;
       }
     }
+
+    const tMsg=checkTechnique(kp);
+    tech.textContent=tMsg;
+    tech.style.background=tMsg==="Τέλεια τεχνική!"?"rgba(0,153,51,0.8)":"rgba(204,0,0,0.8)";
+
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    for(let p of kp){if(p.score>0.4){ctx.fillStyle="yellow";ctx.beginPath();ctx.arc(p.x,p.y,5,0,2*Math.PI);ctx.fill();}}
   }
+  requestAnimationFrame(detect);
 }
 
-// ---------- Events ----------
-startButton.addEventListener('click', () => {
-  startButton.style.display = "none";
-  detectPoseInRealTime();
-});
-
-setupWebcam();
-loadModel();
+setupCam();loadModel();
 </script>
-
 </body>
 </html>
